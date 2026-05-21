@@ -326,4 +326,9 @@ class TechnicalIndicators:
         TechnicalIndicators.add_supertrend(df)
         TechnicalIndicators.add_squeeze_momentum(df)
         TechnicalIndicators.add_fibonacci_levels(df)
+
+        from analysis.candle_patterns import CandlePatternAnalyzer
+        cp = CandlePatternAnalyzer()
+        df = cp.add_to_dataframe(df)
+
         return df

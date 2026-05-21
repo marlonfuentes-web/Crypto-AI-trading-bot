@@ -21,9 +21,9 @@ class AISignalFilter:
     """
 
     def __init__(self, model_path: str = MODEL_FILE,
-                 min_training_samples: int = 50,
-                 cold_start_score: float = 0.70,
-                 retrain_interval_hours: int = 24):
+                 min_training_samples: int = 100,
+                 cold_start_score: float = 0.55,
+                 retrain_interval_hours: int = 8):
         self.model_path = model_path
         self.min_training_samples = min_training_samples
         self.cold_start_score = cold_start_score

@@ -37,18 +37,22 @@ class TradingSignal:
 
 class SignalGenerator:
     """
-    Assembles the 6-criteria entry checklist.
-    ALL criteria must pass for a signal to be emitted.
-    Embodies strict discipline: if ANY criteria fails, no trade.
+    7-criteria entry checklist — ALL must pass, zero soft checks.
+    Built to match a manual 60%+ win-rate trader's discipline:
+    - Only trades with strong trend alignment across all timeframes
+    - Requires confirmed volume (not just average)
+    - Needs price at a meaningful key level (structure matters)
+    - Entry candle must show directional intent
+    - 3 of 4 momentum/volume confirmations required
     """
 
     def __init__(self, trend_detector: TrendDetector = None,
                  volume_analyzer: VolumeAnalyzer = None,
                  mtf_analyzer: MultiTimeframeAnalyzer = None,
-                 min_conviction: int = 5,
+                 min_conviction: int = 6,
                  min_rr_ratio: float = 2.0,
-                 min_adx: float = 25.0,
-                 volume_multiplier: float = 1.5):
+                 min_adx: float = 30.0,
+                 volume_multiplier: float = 2.0):
         self.trend = trend_detector or TrendDetector()
         self.volume = volume_analyzer or VolumeAnalyzer()
         self.mtf = mtf_analyzer or MultiTimeframeAnalyzer()
@@ -61,110 +65,119 @@ class SignalGenerator:
                         conviction: ConvictionScore,
                         order_book_imbalance: float = 0.5,
                         capital: float = 1000.0,
-                        max_risk_pct: float = 1.0) -> Optional[TradingSignal]:
+                        max_risk_pct: float = 5.0) -> Optional[TradingSignal]:
 
         df_5m = tf_data.get("5m")
-        df_15m = tf_data.get("15m")
 
         if df_5m is None or len(df_5m) < 30:
             return None
 
         checklist = {}
         reasons = []
+        last_5m = df_5m.iloc[-1]
+        direction = conviction.aligned_direction
 
-        # === CHECK 1: HTF Trend Alignment ===
-        htf_ok = conviction.htf_bias != "SIDEWAYS" and conviction.htf_bias_confidence > 0.3
+        # === CHECK 1: HTF Trend Alignment (50%+ confidence required) ===
+        htf_ok = (conviction.htf_bias != "SIDEWAYS" and
+                  conviction.htf_bias_confidence > 0.50)
         checklist["htf_trend_aligned"] = htf_ok
         if htf_ok:
-            reasons.append(f"HTF bias {conviction.htf_bias} ({conviction.htf_bias_confidence:.0%} confidence)")
+            reasons.append(f"HTF {conviction.htf_bias} ({conviction.htf_bias_confidence:.0%} conf)")
 
-        # === CHECK 2: MTF Conviction Score ===
+        # === CHECK 2: MTF Conviction Score (6/8 minimum) ===
         conviction_ok = conviction.total >= self.min_conviction
         checklist["conviction_score"] = conviction_ok
         if conviction_ok:
             reasons.append(f"Conviction {conviction.total}/{conviction.max_score}")
 
-        # === CHECK 3: ADX > threshold (trend is strong, not ranging) ===
-        last_5m = df_5m.iloc[-1]
+        # === CHECK 3: ADX >= 30 (strong trending market, not ranging) ===
         adx = float(last_5m.get("adx", 0))
         adx_ok = adx >= self.min_adx
         checklist["adx_trending"] = adx_ok
         if adx_ok:
-            reasons.append(f"ADX {adx:.1f} (trending)")
+            reasons.append(f"ADX {adx:.1f}")
 
-        # === CHECK 4: Momentum not extreme (RSI in 30-75 range) ===
+        # === CHECK 4: Momentum in safe zone (not overbought/oversold) ===
         rsi = float(last_5m.get("rsi", 50))
         stoch_k = float(last_5m.get("stochrsi_k", 50))
-        direction = conviction.aligned_direction
 
         if direction == "BULLISH":
-            momentum_ok = 30 < rsi < 75 and stoch_k < 85
+            momentum_ok = 38 < rsi < 65 and stoch_k < 75
         else:
-            momentum_ok = 25 < rsi < 70 and stoch_k > 15
+            momentum_ok = 35 < rsi < 62 and stoch_k > 25
         checklist["momentum_not_extreme"] = momentum_ok
         if momentum_ok:
-            reasons.append(f"RSI {rsi:.1f} OK, StochRSI {stoch_k:.1f}")
+            reasons.append(f"RSI {rsi:.1f}, StochRSI {stoch_k:.1f}")
 
-        # === CHECK 5: Volume confirmation ===
+        # === CHECK 5: Volume surge >= 2x average ===
         vol_state = self.volume.analyze(df_5m, order_book_imbalance)
         volume_ok = vol_state.surge_ratio >= self.volume_multiplier
         checklist["volume_confirmed"] = volume_ok
         if volume_ok:
-            reasons.append(f"Volume surge {vol_state.surge_ratio:.1f}x avg")
+            reasons.append(f"Volume {vol_state.surge_ratio:.1f}x avg")
 
-        # === CHECK 6: Price near key level ===
-        near_level = self.mtf.is_near_key_level(df_5m, tolerance_pct=0.004)
-        # Relax if volume is very strong
-        if not near_level and vol_state.surge_ratio >= 2.0:
-            near_level = True
-            reasons.append("High volume override for key level check")
+        # === CHECK 6: Price near key level (always required — no override) ===
+        near_level = self.mtf.is_near_key_level(df_5m, tolerance_pct=0.003)
         checklist["near_key_level"] = near_level
         if near_level:
-            reasons.append("Price near key level (VWAP/EMA/BB/S-R)")
+            reasons.append("Price at key level (VWAP/EMA/BB/S-R/Fib)")
 
-        # === EARLY EXIT: If any critical check fails ===
-        critical_checks = ["htf_trend_aligned", "conviction_score", "adx_trending", "momentum_not_extreme"]
-        failed = [k for k in critical_checks if not checklist.get(k, False)]
+        # === CHECK 7: Entry candle confirms direction ===
+        candle_ok = self._check_entry_candle(df_5m, direction)
+        checklist["entry_candle_confirmed"] = candle_ok
+        if candle_ok:
+            reasons.append("Entry candle shows directional intent")
+
+        # === ALL 7 CHECKS MUST PASS — zero exceptions ===
+        failed = [k for k, v in checklist.items() if not v]
         if failed:
-            logger.debug(f"{symbol}: Signal rejected — failed: {failed}")
+            logger.debug(f"{symbol}: Signal rejected — failed checks: {failed}")
             return None
 
-        # Allow soft checks to have 1 failure (near_level or volume)
-        soft_checks = ["volume_confirmed", "near_key_level"]
-        soft_failed = sum(1 for k in soft_checks if not checklist.get(k, True))
-        if soft_failed >= 2:
-            logger.debug(f"{symbol}: Signal rejected — both soft checks failed")
-            return None
-
-        # === ADDITIONAL DIRECTION CONFIRMATION ===
-        signal_direction = direction
+        # === DIRECTION CONFLUENCE: require 3 of 4 confirmations ===
         macd_hist = float(last_5m.get("macd_hist", 0))
         cvd_bullish = vol_state.cvd_bullish
         obv_up = vol_state.obv_trend == "UP"
 
-        if signal_direction == "BULLISH":
-            confirmations = sum([macd_hist > 0, cvd_bullish, obv_up,
-                                  order_book_imbalance > 0.5])
-            if confirmations < 2:
-                logger.debug(f"{symbol}: Long rejected — only {confirmations}/4 volume confirmations")
+        if direction == "BULLISH":
+            confirmations = sum([
+                macd_hist > 0,
+                cvd_bullish,
+                obv_up,
+                order_book_imbalance > 0.52,
+            ])
+            if confirmations < 3:
+                logger.debug(f"{symbol}: Long rejected — {confirmations}/4 confluence ({macd_hist:.4f}, cvd={cvd_bullish}, obv={vol_state.obv_trend}, ob={order_book_imbalance:.2f})")
                 return None
         else:
-            confirmations = sum([macd_hist < 0, not cvd_bullish, not obv_up,
-                                  order_book_imbalance < 0.5])
-            if confirmations < 2:
-                logger.debug(f"{symbol}: Short rejected — only {confirmations}/4 volume confirmations")
+            confirmations = sum([
+                macd_hist < 0,
+                not cvd_bullish,
+                not obv_up,
+                order_book_imbalance < 0.48,
+            ])
+            if confirmations < 3:
+                logger.debug(f"{symbol}: Short rejected — {confirmations}/4 confluence")
                 return None
 
-        # === CALCULATE ENTRY PRICE, SL, TP ===
+        reasons.append(f"Confluence {confirmations}/4")
+
+        # === PULLBACK CONFIRMATION: entry near EMA21 or BB midline ===
+        pullback_ok = self._check_pullback_quality(df_5m, direction)
+        if not pullback_ok:
+            logger.debug(f"{symbol}: Rejected — price not in pullback zone (chasing entry)")
+            return None
+        reasons.append("Pullback to key EMA/midline")
+
+        # === CALCULATE ENTRY, SL, TP ===
         price = float(df_5m["close"].iloc[-1])
         atr = float(last_5m.get("atr", price * 0.01))
         if atr <= 0:
             atr = price * 0.01
 
-        if signal_direction == "BULLISH":
+        if direction == "BULLISH":
             entry = price
             stop_loss = entry - 1.5 * atr
-            # Push SL below nearest support
             support = float(last_5m.get("support", entry - 2 * atr))
             stop_loss = min(stop_loss, support - 0.05 * atr)
         else:
@@ -175,24 +188,23 @@ class SignalGenerator:
 
         sl_distance = abs(entry - stop_loss)
         if sl_distance <= 0:
-            logger.warning(f"{symbol}: Invalid SL distance {sl_distance}")
+            logger.warning(f"{symbol}: Invalid SL distance")
             return None
 
-        take_profit_1 = entry + sl_distance * self.min_rr_ratio * (1 if signal_direction == "BULLISH" else -1)
-        take_profit_2 = entry + sl_distance * (self.min_rr_ratio + 1) * (1 if signal_direction == "BULLISH" else -1)
+        take_profit_1 = entry + sl_distance * self.min_rr_ratio * (1 if direction == "BULLISH" else -1)
+        take_profit_2 = entry + sl_distance * (self.min_rr_ratio + 1) * (1 if direction == "BULLISH" else -1)
 
         rr = abs(take_profit_1 - entry) / sl_distance
         if rr < self.min_rr_ratio:
-            logger.debug(f"{symbol}: R:R {rr:.2f} below minimum {self.min_rr_ratio}")
             return None
 
-        # === POSITION SIZING ===
+        # === POSITION SIZING: 5% risk per trade ===
         risk_amount = capital * (max_risk_pct / 100)
         position_size = risk_amount / sl_distance
         notional = position_size * entry
 
-        # Cap position at 20% of capital
-        max_notional = capital * 0.20
+        # Cap notional at 50% of capital (allows 5% risk to work at typical SL distances)
+        max_notional = capital * 0.50
         if notional > max_notional:
             position_size = max_notional / entry
             notional = max_notional
@@ -203,7 +215,7 @@ class SignalGenerator:
         return TradingSignal(
             signal_id=str(uuid.uuid4())[:8],
             symbol=symbol,
-            direction="LONG" if signal_direction == "BULLISH" else "SHORT",
+            direction="LONG" if direction == "BULLISH" else "SHORT",
             entry_price=round(entry, 8),
             stop_loss=round(stop_loss, 8),
             take_profit_1=round(take_profit_1, 8),
@@ -214,11 +226,86 @@ class SignalGenerator:
             atr=round(atr, 8),
             conviction_score=conviction.total,
             conviction_max=conviction.max_score,
-            ai_score=0.0,  # filled by AISignalFilter
+            ai_score=0.0,
             rr_ratio=round(rr, 2),
             checklist=checklist,
             entry_reason=reasons,
         )
+
+    def _check_entry_candle(self, df: pd.DataFrame, direction: TrendDirection) -> bool:
+        """
+        Entry candle must show clear directional intent.
+        LONG: bullish candle (close > open), close in top 50% of candle range,
+              body >= 35% of total candle range
+        SHORT: bearish candle (close < open), close in bottom 50% of range,
+               body >= 35% of range
+        Exception: high-volume absorption (volume >= 2.5x avg) forgives small body (doji = indecision resolved by volume)
+        """
+        if len(df) < 2:
+            return True
+        last = df.iloc[-1]
+        open_ = float(last["open"])
+        close = float(last["close"])
+        high = float(last["high"])
+        low = float(last["low"])
+        candle_range = high - low
+        if candle_range <= 0:
+            return False
+
+        body = abs(close - open_)
+        body_ratio = body / candle_range
+        close_position = (close - low) / candle_range  # 0 = at low, 1 = at high
+
+        # High-volume absorption exception
+        avg_vol = float(df["volume"].tail(20).mean())
+        current_vol = float(last["volume"])
+        vol_ratio = current_vol / avg_vol if avg_vol > 0 else 1.0
+        absorption = vol_ratio >= 2.5
+
+        if direction == "BULLISH":
+            is_bullish_candle = close > open_
+            close_in_upper_half = close_position >= 0.50
+            strong_body = body_ratio >= 0.35
+            return (is_bullish_candle and close_in_upper_half) and (strong_body or absorption)
+        else:
+            is_bearish_candle = close < open_
+            close_in_lower_half = close_position <= 0.50
+            strong_body = body_ratio >= 0.35
+            return (is_bearish_candle and close_in_lower_half) and (strong_body or absorption)
+
+    def _check_pullback_quality(self, df: pd.DataFrame, direction: TrendDirection) -> bool:
+        """
+        Avoids chasing breakouts. Requires price to be in a pullback zone:
+        - Near EMA21 (within 0.8% for longs = pulled back to trend)
+        - OR near BB midline (mean reversion sweet spot)
+        - OR near VWAP (institutional equilibrium)
+        - OR Supertrend is bullish/bearish and price is near it
+        """
+        if len(df) < 2:
+            return True
+        last = df.iloc[-1]
+        close = float(last["close"])
+
+        levels_to_check = []
+        for col in ["ema_21", "ema_50", "bb_mid", "vwap"]:
+            val = float(last.get(col, 0))
+            if val > 0:
+                levels_to_check.append(val)
+
+        # Supertrend proximity
+        supertrend = float(last.get("supertrend", 0))
+        if supertrend > 0:
+            levels_to_check.append(supertrend)
+
+        if not levels_to_check:
+            return True  # can't check, allow
+
+        for level in levels_to_check:
+            dist_pct = abs(close - level) / close
+            if dist_pct <= 0.008:  # within 0.8% of a key moving average
+                return True
+
+        return False
 
     def validate_spread(self, symbol: str, ticker: Dict,
                          max_spread_pct: float = 0.001) -> bool:
@@ -233,7 +320,3 @@ class SignalGenerator:
             return spread <= max_spread_pct
         except Exception:
             return True
-
-    def is_trading_window(self) -> bool:
-        """Returns False during known low-liquidity periods (optional filter)."""
-        return True  # Can be extended with time-based filters

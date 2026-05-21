@@ -23,12 +23,12 @@ class TradingConfig:
     trading_mode: str = "paper"  # "paper" or "live"
     entry_timeframe: str = "5m"
     timeframes: List[str] = field(default_factory=lambda: ["5m", "15m", "30m", "1h", "4h", "1d"])
-    min_conviction_score: int = 5
+    min_conviction_score: int = 6
     max_concurrent_trades: int = 3
-    target_trades_per_day: int = 40
-    min_adx_threshold: float = 25.0
-    volume_surge_multiplier: float = 1.5
-    ai_confidence_threshold: float = 0.60
+    target_trades_per_day: int = 20
+    min_adx_threshold: float = 30.0
+    volume_surge_multiplier: float = 2.0
+    ai_confidence_threshold: float = 0.65
     min_rr_ratio: float = 2.0
     scan_interval_seconds: int = 60
 
@@ -36,9 +36,9 @@ class TradingConfig:
 @dataclass
 class RiskConfig:
     capital_usdt: float
-    max_risk_per_trade_pct: float = 1.0
-    max_daily_loss_pct: float = 3.0
-    max_drawdown_pct: float = 8.0
+    max_risk_per_trade_pct: float = 5.0
+    max_daily_loss_pct: float = 10.0
+    max_drawdown_pct: float = 20.0
     min_rr_ratio: float = 2.0
     trailing_stop_activation_atr: float = 1.5
     max_sl_atr_multiplier: float = 1.5
@@ -48,9 +48,9 @@ class RiskConfig:
 @dataclass
 class AIConfig:
     model_path: str = "models/signal_filter.pkl"
-    min_training_samples: int = 50
-    retrain_interval_hours: int = 24
-    cold_start_score: float = 0.70
+    min_training_samples: int = 100
+    retrain_interval_hours: int = 8
+    cold_start_score: float = 0.55
 
 
 @dataclass
@@ -90,16 +90,16 @@ def load_config() -> AppConfig:
     trading_cfg = TradingConfig(
         symbols=symbols,
         trading_mode=os.getenv("TRADING_MODE", "paper"),
-        min_conviction_score=int(os.getenv("MIN_CONVICTION_SCORE", "5")),
+        min_conviction_score=int(os.getenv("MIN_CONVICTION_SCORE", "6")),
         max_concurrent_trades=int(os.getenv("MAX_CONCURRENT_TRADES", "3")),
-        ai_confidence_threshold=float(os.getenv("AI_CONFIDENCE_THRESHOLD", "0.60")),
+        ai_confidence_threshold=float(os.getenv("AI_CONFIDENCE_THRESHOLD", "0.65")),
         min_rr_ratio=float(os.getenv("MIN_RR_RATIO", "2.0")),
     )
 
     risk_cfg = RiskConfig(
         capital_usdt=float(os.getenv("CAPITAL_USDT", "1000.0")),
-        max_risk_per_trade_pct=float(os.getenv("MAX_RISK_PER_TRADE_PCT", "1.0")),
-        max_daily_loss_pct=float(os.getenv("MAX_DAILY_LOSS_PCT", "3.0")),
+        max_risk_per_trade_pct=float(os.getenv("MAX_RISK_PER_TRADE_PCT", "5.0")),
+        max_daily_loss_pct=float(os.getenv("MAX_DAILY_LOSS_PCT", "10.0")),
         min_rr_ratio=float(os.getenv("MIN_RR_RATIO", "2.0")),
     )
 

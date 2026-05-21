@@ -62,11 +62,16 @@ class ScalpingStrategy:
 
         # Cooldown tracking: after SL hit, don't trade symbol for N minutes
         self._symbol_cooldowns: Dict[str, float] = {}
-        self.cooldown_minutes = 30
+        self.cooldown_minutes = 45
 
         # Track last signal time to avoid over-trading single symbols
         self._last_signal_time: Dict[str, float] = {}
-        self.min_signal_interval_seconds = 300  # 5 min between signals per symbol
+        self.min_signal_interval_seconds = 600  # 10 min between signals per symbol
+
+        # Consecutive loss circuit breaker per symbol
+        self._consecutive_losses: Dict[str, int] = {}
+        self.max_consecutive_losses = 3          # 2-hour cooldown after 3 losses in a row
+        self.hard_cooldown_minutes = 120
 
         # Stats
         self.signals_generated = 0
@@ -238,10 +243,23 @@ class ScalpingStrategy:
         return False
 
     def on_trade_closed_with_loss(self, symbol: str):
-        """Put symbol in cooldown after a losing trade."""
-        cooldown_until = time.time() + self.cooldown_minutes * 60
-        self._symbol_cooldowns[symbol] = cooldown_until
-        logger.info(f"{symbol} in cooldown for {self.cooldown_minutes} min after SL hit")
+        """Put symbol in cooldown after a losing trade. Escalates after consecutive losses."""
+        self._consecutive_losses[symbol] = self._consecutive_losses.get(symbol, 0) + 1
+        consecutive = self._consecutive_losses[symbol]
+
+        if consecutive >= self.max_consecutive_losses:
+            cooldown_until = time.time() + self.hard_cooldown_minutes * 60
+            self._symbol_cooldowns[symbol] = cooldown_until
+            self._consecutive_losses[symbol] = 0  # reset after hard cooldown
+            logger.warning(f"{symbol}: {consecutive} consecutive losses — hard cooldown {self.hard_cooldown_minutes} min")
+        else:
+            cooldown_until = time.time() + self.cooldown_minutes * 60
+            self._symbol_cooldowns[symbol] = cooldown_until
+            logger.info(f"{symbol} in cooldown {self.cooldown_minutes} min (loss #{consecutive})")
+
+    def on_trade_closed_with_win(self, symbol: str):
+        """Reset consecutive loss counter on a win."""
+        self._consecutive_losses[symbol] = 0
 
     def record_trade_outcome(self, features: Dict, outcome: int):
         """Feed trade result back to AI model for learning."""

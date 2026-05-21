@@ -47,7 +47,7 @@ class ConvictionScore:
 
     @property
     def is_tradeable(self) -> bool:
-        return self.total >= 5 and self.aligned_direction != "SIDEWAYS"
+        return self.total >= 6 and self.aligned_direction != "SIDEWAYS"
 
 
 class MultiTimeframeAnalyzer:
@@ -91,12 +91,14 @@ class MultiTimeframeAnalyzer:
             total_score += tf_score.score
             breakdown[tf] = tf_score.score
 
-        # Step 3: Check if there are any opposing signals (conflict detection)
+        # Step 3: Penalize conflicting timeframes (not just log)
         opposing = [tf for tf, sc in tf_scores.items()
                     if sc.direction not in (htf_bias, "SIDEWAYS") and sc.score == 0]
         notes = []
         if len(opposing) >= 2:
-            notes.append(f"Conflicting signals on {opposing}")
+            penalty = 2
+            total_score = max(0, total_score - penalty)
+            notes.append(f"Score penalized -{penalty}: {len(opposing)} opposing TFs {opposing}")
 
         return ConvictionScore(
             total=total_score,
@@ -121,19 +123,15 @@ class MultiTimeframeAnalyzer:
         else:
             reasons.append(f"Trend {state.direction} conflicts with HTF {htf_bias}")
 
-        # For higher timeframes (1d, 4h) — direction match is enough
-        if timeframe in ("1d", "4h"):
-            score = weight if aligned else 0
+        # All timeframes now check momentum — 4h/1d could be mid-reversal
+        momentum_ok = self._check_momentum_ok(df, htf_bias)
+        if aligned and momentum_ok:
+            score = weight
+        elif aligned and not momentum_ok:
+            score = max(0, weight - 1)  # partial credit for direction only
+            reasons.append("Momentum not confirmed on this TF")
         else:
-            # For lower timeframes, also check momentum
-            momentum_ok = self._check_momentum_ok(df, htf_bias)
-            if aligned and momentum_ok:
-                score = weight
-            elif aligned:
-                score = max(0, weight - 1)  # partial credit
-                reasons.append("Momentum not confirmed")
-            else:
-                score = 0
+            score = 0
 
         return TimeframeScore(
             timeframe=timeframe,
@@ -152,13 +150,13 @@ class MultiTimeframeAnalyzer:
         stoch_k = float(last.get("stochrsi_k", 50))
 
         if direction == "BULLISH":
-            # Not overbought — room to run
-            rsi_ok = 30 < rsi < 75
-            stoch_ok = stoch_k < 85
+            # Tighter range: avoid entering overbought or deep oversold bounce trades
+            rsi_ok = 40 < rsi < 68
+            stoch_ok = stoch_k < 75
         else:
-            # Not oversold — room to drop
-            rsi_ok = 25 < rsi < 70
-            stoch_ok = stoch_k > 15
+            # Tighter range for shorts
+            rsi_ok = 32 < rsi < 60
+            stoch_ok = stoch_k > 25
 
         return rsi_ok and stoch_ok
 

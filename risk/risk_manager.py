@@ -49,8 +49,8 @@ class PositionSizeResult:
 
 
 class RiskManager:
-    def __init__(self, capital: float, max_risk_pct: float = 1.0,
-                 max_daily_loss_pct: float = 3.0, max_drawdown_pct: float = 8.0,
+    def __init__(self, capital: float, max_risk_pct: float = 5.0,
+                 max_daily_loss_pct: float = 10.0, max_drawdown_pct: float = 20.0,
                  max_concurrent: int = 3, min_rr: float = 2.0,
                  sl_atr_multiplier: float = 1.5):
         self.capital = capital
@@ -109,8 +109,8 @@ class RiskManager:
         units = risk_amount / sl_distance
         notional = units * entry
 
-        # Cap at 20% of capital per position
-        max_notional = capital * 0.20
+        # Cap at 50% of capital per position (allows 5% risk to work at typical SL distances)
+        max_notional = capital * 0.50
         if notional > max_notional:
             units = max_notional / entry
             notional = max_notional
@@ -131,8 +131,8 @@ class RiskManager:
         if self.daily_stats.is_trading_halted:
             return False, f"Trading halted: {self.daily_stats.halt_reason}"
 
-        if self.daily_stats.trades_taken >= 50:
-            return False, "Daily trade limit (50) reached"
+        if self.daily_stats.trades_taken >= 30:
+            return False, "Daily trade limit (30) reached"
 
         if len(self._open_positions) >= self.max_concurrent:
             return False, f"Max concurrent trades ({self.max_concurrent}) reached"
@@ -142,9 +142,10 @@ class RiskManager:
             self._halt_trading(f"Daily loss limit {self.max_daily_loss_pct}% reached")
             return False, f"Daily loss limit {self.max_daily_loss_pct}% reached"
 
-        # Early warning: if win rate < 30% after 10 trades, be cautious
-        if self.daily_stats.trades_taken >= 10 and self.daily_stats.win_rate < 0.30:
-            logger.warning("Win rate < 30% today — extra conviction required")
+        # Hard halt if win rate below 35% after 10 trades — the strategy is not working today
+        if self.daily_stats.trades_taken >= 10 and self.daily_stats.win_rate < 0.35:
+            self._halt_trading(f"Win rate {self.daily_stats.win_rate:.0%} below 35% after {self.daily_stats.trades_taken} trades")
+            return False, f"Win rate circuit breaker: {self.daily_stats.win_rate:.0%}"
 
         return True, "OK"
 

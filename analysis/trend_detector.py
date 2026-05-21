@@ -66,13 +66,16 @@ class TrendDetector:
                 higher_highs = float(highs.iloc[-1]) > float(highs.iloc[-2]) > float(highs.iloc[-3])
                 higher_lows = float(lows.iloc[-1]) > float(lows.iloc[-2]) > float(lows.iloc[-3])
 
-        # Determine direction
+        # Determine direction — require clear DMI separation (not just barely ahead)
+        dmi_bull = (dmp - dmn) > 8
+        dmi_bear = (dmn - dmp) > 8
+
         bullish_signals = sum([
             bull_stack,
             price_above_vwap,
             supertrend_bullish,
-            dmp > dmn,
-            slope_ema50 > 0,
+            dmi_bull,
+            slope_ema50 > 0.3,   # meaningful upward slope, not noise
             higher_highs,
             higher_lows,
         ])
@@ -80,8 +83,8 @@ class TrendDetector:
             bear_stack,
             not price_above_vwap,
             not supertrend_bullish,
-            dmn > dmp,
-            slope_ema50 < 0,
+            dmi_bear,
+            slope_ema50 < -0.3,  # meaningful downward slope
             not higher_highs,
             not higher_lows,
         ])
@@ -92,14 +95,11 @@ class TrendDetector:
             direction = "BULLISH"
         elif bearish_signals >= 5:
             direction = "BEARISH"
-        elif bullish_signals >= 4:
-            direction = "BULLISH"
-        elif bearish_signals >= 4:
-            direction = "BEARISH"
         else:
             direction = "SIDEWAYS"
 
-        confidence = min(1.0, (adx / 50) * (max(bullish_signals, bearish_signals) / 7))
+        # Harder to saturate — denominator 60 instead of 50
+        confidence = min(1.0, (adx / 60) * (max(bullish_signals, bearish_signals) / 7))
 
         return TrendState(
             direction=direction,

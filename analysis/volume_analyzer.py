@@ -134,20 +134,21 @@ class VolumeAnalyzer:
 
     def get_volume_confirmation(self, df: pd.DataFrame, direction: str) -> bool:
         """
-        Confirm entry direction with volume:
-        LONG: OBV trending up + CVD bullish + no bearish surge
-        SHORT: OBV trending down + CVD bearish
+        Strict volume confirmation — OBV must be UP (not FLAT), surge must be >= 2x,
+        and volume anomaly z-score >= 1.5 (real institutional-level event).
         """
         state = self.analyze(df)
         if direction.upper() in ("LONG", "BUY", "BULLISH"):
             return (
-                state.obv_trend in ("UP", "FLAT") and
+                state.obv_trend == "UP" and          # must be actively rising
                 state.cvd_bullish and
-                state.surge_ratio >= 1.0
+                state.surge_ratio >= 2.0 and          # 2x average required
+                state.anomaly_score >= 1.5            # statistically significant
             )
         else:
             return (
-                state.obv_trend in ("DOWN", "FLAT") and
+                state.obv_trend == "DOWN" and         # must be actively falling
                 not state.cvd_bullish and
-                state.surge_ratio >= 1.0
+                state.surge_ratio >= 2.0 and
+                state.anomaly_score >= 1.5
             )

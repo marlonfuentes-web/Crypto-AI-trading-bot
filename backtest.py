@@ -464,6 +464,11 @@ SEP = "─" * 68
 def _fmt_pct(v: float) -> str:
     return f"{'+'if v>=0 else ''}{v:.2f}%"
 
+def _fmt_pf(pf: float) -> str:
+    if pf > 999:
+        return ">999"
+    return f"{pf:.2f}"
+
 def print_symbol_table(results: List[SymbolResult]):
     print(f"\n  {'Symbol':<12}  {'Trades':>6}  {'Win%':>6}  {'PF':>5}  {'Return':>8}  {'MaxDD':>7}  {'Signals':>7}")
     print("  " + SEP)
@@ -475,7 +480,7 @@ def print_symbol_table(results: List[SymbolResult]):
         print(
             f"  {r.symbol:<12}  {r.total_trades:>6}  "
             f"{r.win_rate*100:>5.1f}% {flag}  "
-            f"{r.profit_factor:>5.2f}  "
+            f"{_fmt_pf(r.profit_factor):>5}  "
             f"{_fmt_pct(r.return_pct):>8}  "
             f"{r.max_drawdown_pct:>6.1f}%  "
             f"{r.signals_seen:>7}"
@@ -547,7 +552,7 @@ def print_portfolio_summary(results: List[SymbolResult], days: int, capital: flo
     print(f"  Total Trades:     {total}  ({trades_per_day:.1f}/day avg)")
     print(f"  Win Rate:         {wr*100:.1f}%  "
           f"(W:{wins}  L:{losses}  Timeout:{touts})")
-    print(f"  Profit Factor:    {pf:.2f}")
+    print(f"  Profit Factor:    {_fmt_pf(pf)}")
     print(f"  Max Drawdown:     {max_dd:.2f}%")
     print(f"  {'─'*68}")
     print(f"  Gross Profit:     ${gp:.2f}")

@@ -10,6 +10,7 @@ stay net-bullish during consolidations → conviction can build to 6-8/8.
 
 Key calibration: +2%/day during bull macro = +0.000069/5m-bar drift
 """
+import hashlib
 import numpy as np
 import pandas as pd
 import time
@@ -72,7 +73,8 @@ MICRO_TRANS = {
 
 
 def generate_5m(symbol: str, n_bars: int, seed: int = 42) -> pd.DataFrame:
-    rng   = np.random.default_rng(seed + abs(hash(symbol)) % 9973)
+    sym_hash = int(hashlib.md5(symbol.encode()).hexdigest(), 16) % 9973
+    rng   = np.random.default_rng(seed + sym_hash)
     p0    = float(SYMBOL_PRICES.get(symbol, 100.0))
     price = p0
 

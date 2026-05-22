@@ -52,7 +52,11 @@ class SignalGenerator:
                  min_conviction: int = 6,
                  min_rr_ratio: float = 2.0,
                  min_adx: float = 30.0,
-                 volume_multiplier: float = 2.0):
+                 volume_multiplier: float = 2.0,
+                 htf_confidence: float = 0.50,
+                 min_confluences: int = 3,
+                 rsi_lo_long: float = 38.0,
+                 rsi_hi_long: float = 65.0):
         self.trend = trend_detector or TrendDetector()
         self.volume = volume_analyzer or VolumeAnalyzer()
         self.mtf = mtf_analyzer or MultiTimeframeAnalyzer()
@@ -60,6 +64,10 @@ class SignalGenerator:
         self.min_rr_ratio = min_rr_ratio
         self.min_adx = min_adx
         self.volume_multiplier = volume_multiplier
+        self.htf_confidence = htf_confidence
+        self.min_confluences = min_confluences
+        self.rsi_lo_long = rsi_lo_long
+        self.rsi_hi_long = rsi_hi_long
 
     def generate_signal(self, symbol: str, tf_data: Dict[str, pd.DataFrame],
                         conviction: ConvictionScore,
@@ -77,9 +85,9 @@ class SignalGenerator:
         last_5m = df_5m.iloc[-1]
         direction = conviction.aligned_direction
 
-        # === CHECK 1: HTF Trend Alignment (50%+ confidence required) ===
+        # === CHECK 1: HTF Trend Alignment ===
         htf_ok = (conviction.htf_bias != "SIDEWAYS" and
-                  conviction.htf_bias_confidence > 0.50)
+                  conviction.htf_bias_confidence > self.htf_confidence)
         checklist["htf_trend_aligned"] = htf_ok
         if htf_ok:
             reasons.append(f"HTF {conviction.htf_bias} ({conviction.htf_bias_confidence:.0%} conf)")
@@ -101,10 +109,12 @@ class SignalGenerator:
         rsi = float(last_5m.get("rsi", 50))
         stoch_k = float(last_5m.get("stochrsi_k", 50))
 
+        rsi_lo_short = max(25.0, self.rsi_lo_long - 3)
+        rsi_hi_short = max(55.0, self.rsi_hi_long - 3)
         if direction == "BULLISH":
-            momentum_ok = 38 < rsi < 65 and stoch_k < 75
+            momentum_ok = self.rsi_lo_long < rsi < self.rsi_hi_long and stoch_k < 75
         else:
-            momentum_ok = 35 < rsi < 62 and stoch_k > 25
+            momentum_ok = rsi_lo_short < rsi < rsi_hi_short and stoch_k > 25
         checklist["momentum_not_extreme"] = momentum_ok
         if momentum_ok:
             reasons.append(f"RSI {rsi:.1f}, StochRSI {stoch_k:.1f}")
@@ -146,7 +156,7 @@ class SignalGenerator:
                 obv_up,
                 order_book_imbalance > 0.52,
             ])
-            if confirmations < 3:
+            if confirmations < self.min_confluences:
                 logger.debug(f"{symbol}: Long rejected — {confirmations}/4 confluence ({macd_hist:.4f}, cvd={cvd_bullish}, obv={vol_state.obv_trend}, ob={order_book_imbalance:.2f})")
                 return None
         else:
@@ -156,7 +166,7 @@ class SignalGenerator:
                 not obv_up,
                 order_book_imbalance < 0.48,
             ])
-            if confirmations < 3:
+            if confirmations < self.min_confluences:
                 logger.debug(f"{symbol}: Short rejected — {confirmations}/4 confluence")
                 return None
 

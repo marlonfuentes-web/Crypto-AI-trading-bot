@@ -43,13 +43,19 @@ FEATURE_NAMES = [
     # MTF (2)
     "conviction_score_normalized",
     "timeframe_alignment_ratio",
+    # Quantum (4)
+    "quantum_bull_amplitude",
+    "quantum_bear_amplitude",
+    "entanglement_score",
+    "superposition_strength",
 ]
 
 
 class FeatureEngineer:
     def extract_features(self, df_5m: pd.DataFrame, conviction: ConvictionScore,
                           volume_state: VolumeState,
-                          order_book_imbalance: float = 0.5) -> Dict[str, float]:
+                          order_book_imbalance: float = 0.5,
+                          quantum_state=None) -> Dict[str, float]:
         features = {}
         last = df_5m.iloc[-1] if len(df_5m) > 0 else pd.Series(dtype=float)
         close = float(last.get("close", 1.0))
@@ -160,6 +166,18 @@ class FeatureEngineer:
             features["timeframe_alignment_ratio"] = aligned / total_tfs
         else:
             features["timeframe_alignment_ratio"] = 0.5
+
+        # --- Quantum Features (zeros when quantum disabled — backward safe) ---
+        if quantum_state is not None:
+            features["quantum_bull_amplitude"] = float(quantum_state.p_bull)
+            features["quantum_bear_amplitude"] = float(quantum_state.p_bear)
+            features["entanglement_score"] = float(quantum_state.entanglement_score)
+            features["superposition_strength"] = float(quantum_state.superposition_strength)
+        else:
+            features["quantum_bull_amplitude"] = 0.0
+            features["quantum_bear_amplitude"] = 0.0
+            features["entanglement_score"] = 0.0
+            features["superposition_strength"] = 0.0
 
         return features
 

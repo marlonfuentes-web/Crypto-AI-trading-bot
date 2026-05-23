@@ -73,7 +73,9 @@ class SignalGenerator:
                         conviction: ConvictionScore,
                         order_book_imbalance: float = 0.5,
                         capital: float = 1000.0,
-                        max_risk_pct: float = 5.0) -> Optional[TradingSignal]:
+                        max_risk_pct: float = 5.0,
+                        kelly_sizer=None,
+                        quantum_conviction: float = 0.625) -> Optional[TradingSignal]:
 
         df_5m = tf_data.get("5m")
 
@@ -208,8 +210,12 @@ class SignalGenerator:
         if rr < self.min_rr_ratio:
             return None
 
-        # === POSITION SIZING: 5% risk per trade ===
-        risk_amount = capital * (max_risk_pct / 100)
+        # === POSITION SIZING: Kelly or fixed risk ===
+        if kelly_sizer is not None:
+            effective_risk_pct = kelly_sizer.calculate_risk_pct(quantum_conviction)
+        else:
+            effective_risk_pct = max_risk_pct
+        risk_amount = capital * (effective_risk_pct / 100)
         position_size = risk_amount / sl_distance
         notional = position_size * entry
 

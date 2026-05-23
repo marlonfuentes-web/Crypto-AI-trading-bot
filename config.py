@@ -63,6 +63,32 @@ class NotificationConfig:
 
 
 @dataclass
+class QuantumConfig:
+    enabled: bool = True
+    # Clarity thresholds for adaptive aggression
+    high_clarity_threshold: float = 0.8
+    mid_clarity_threshold: float = 0.5
+    # Neural brain
+    use_lstm: bool = True
+    lstm_model_path: str = "models/lstm_model.pt"
+    mlp_model_path: str = "models/mlp_brain.pkl"
+    retrain_interval_hours: int = 4
+    min_training_samples: int = 50
+    # Kelly sizing
+    use_kelly: bool = True
+    kelly_max_risk_pct: float = 10.0
+    kelly_min_risk_pct: float = 0.5
+    kelly_fallback_risk_pct: float = 5.0
+    # Adaptive aggression intervals
+    adaptive_aggression: bool = True
+    high_clarity_interval_seconds: int = 120
+    mid_clarity_interval_seconds: int = 300
+    high_clarity_cooldown_minutes: int = 15
+    high_clarity_max_concurrent: int = 5
+    high_clarity_daily_cap: int = 50
+
+
+@dataclass
 class AppConfig:
     exchange: ExchangeConfig
     trading: TradingConfig
@@ -73,6 +99,7 @@ class AppConfig:
     data_dir: str = "data/cache"
     models_dir: str = "models"
     logs_dir: str = "logs"
+    quantum: Optional[QuantumConfig] = None
 
 
 def load_config() -> AppConfig:
@@ -114,6 +141,20 @@ def load_config() -> AppConfig:
     os.makedirs("logs", exist_ok=True)
     os.makedirs("data/cache", exist_ok=True)
 
+    quantum_cfg = None
+    if os.getenv("QUANTUM_ENABLED", "false").lower() == "true":
+        quantum_cfg = QuantumConfig(
+            enabled=True,
+            use_lstm=os.getenv("QUANTUM_USE_LSTM", "true").lower() == "true",
+            use_kelly=os.getenv("QUANTUM_USE_KELLY", "true").lower() == "true",
+            adaptive_aggression=os.getenv("QUANTUM_ADAPTIVE_AGGRESSION", "true").lower() == "true",
+            kelly_max_risk_pct=float(os.getenv("QUANTUM_KELLY_MAX_RISK_PCT", "10.0")),
+            kelly_min_risk_pct=float(os.getenv("QUANTUM_KELLY_MIN_RISK_PCT", "0.5")),
+            kelly_fallback_risk_pct=float(os.getenv("QUANTUM_KELLY_FALLBACK_RISK_PCT", "5.0")),
+            high_clarity_threshold=float(os.getenv("QUANTUM_HIGH_CLARITY_THRESHOLD", "0.8")),
+            mid_clarity_threshold=float(os.getenv("QUANTUM_MID_CLARITY_THRESHOLD", "0.5")),
+        )
+
     return AppConfig(
         exchange=exchange_cfg,
         trading=trading_cfg,
@@ -121,4 +162,5 @@ def load_config() -> AppConfig:
         ai=ai_cfg,
         notification=notif_cfg,
         log_level=os.getenv("LOG_LEVEL", "INFO"),
+        quantum=quantum_cfg,
     )

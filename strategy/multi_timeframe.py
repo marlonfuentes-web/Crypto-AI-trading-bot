@@ -40,6 +40,7 @@ class ConvictionScore:
     htf_bias_confidence: float
     tf_scores: Dict[str, TimeframeScore] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
+    quantum_state: Optional = field(default=None)
 
     @property
     def score_pct(self) -> float:
@@ -53,10 +54,12 @@ class ConvictionScore:
 class MultiTimeframeAnalyzer:
     def __init__(self, trend_detector: TrendDetector = None,
                  volume_analyzer: VolumeAnalyzer = None,
-                 min_conviction: int = 5):
+                 min_conviction: int = 5,
+                 quantum_scorer=None):
         self.trend = trend_detector or TrendDetector()
         self.volume = volume_analyzer or VolumeAnalyzer()
         self.min_conviction = min_conviction
+        self.quantum_scorer = quantum_scorer
 
     def analyze(self, tf_data: Dict[str, pd.DataFrame], symbol: str = "") -> ConvictionScore:
         if not tf_data:
@@ -100,6 +103,18 @@ class MultiTimeframeAnalyzer:
             total_score = max(0, total_score - penalty)
             notes.append(f"Score penalized -{penalty}: {len(opposing)} opposing TFs {opposing}")
 
+        # Quantum conviction override (when quantum scorer is set)
+        quantum_state = None
+        if self.quantum_scorer is not None:
+            try:
+                quantum_state = self.quantum_scorer.score(tf_scores, htf_bias, htf_confidence)
+                total_score = quantum_state.legacy_conviction_int
+                # Still apply the -2 conflict penalty
+                if len(opposing) >= 2:
+                    total_score = max(0, total_score - 2)
+            except Exception as e:
+                logger.warning(f"Quantum scorer error: {e}")
+
         return ConvictionScore(
             total=total_score,
             max_score=MAX_WEIGHT,
@@ -109,6 +124,7 @@ class MultiTimeframeAnalyzer:
             htf_bias_confidence=htf_confidence,
             tf_scores=tf_scores,
             notes=notes,
+            quantum_state=quantum_state,
         )
 
     def _score_timeframe(self, df: pd.DataFrame, timeframe: str,

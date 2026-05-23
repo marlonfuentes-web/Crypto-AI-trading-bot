@@ -60,6 +60,12 @@ class ScalpingStrategy:
         self.trade_mgr = trade_manager
         self.bot_logger = bot_logger
 
+        # Quantum components (populated by TradingBot when QUANTUM_ENABLED)
+        self.quantum_scorer = None
+        self.neural_brain = None
+        self.kelly_sizer = None
+        self.aggression_ctrl = None
+
         # Cooldown tracking: after SL hit, don't trade symbol for N minutes
         self._symbol_cooldowns: Dict[str, float] = {}
         self.cooldown_minutes = 45
@@ -112,6 +118,19 @@ class ScalpingStrategy:
         # Order book imbalance for volume confirmation
         ob_imbalance = await self.market_data.get_order_book_imbalance(symbol)
 
+        # Quantum conviction override
+        quantum_state = None
+        if self.quantum_scorer is not None and conviction.quantum_state is None:
+            # scorer not yet wired into mtf_analyzer — score post-hoc
+            try:
+                quantum_state = self.quantum_scorer.score(
+                    conviction.tf_scores, conviction.htf_bias, conviction.htf_bias_confidence
+                )
+            except Exception:
+                quantum_state = None
+        elif hasattr(conviction, "quantum_state"):
+            quantum_state = conviction.quantum_state
+
         # Generate signal (6-criteria checklist)
         capital = self.risk.capital if self.risk else self.config.risk.capital_usdt
         signal = self.signal_gen.generate_signal(
@@ -121,6 +140,8 @@ class ScalpingStrategy:
             order_book_imbalance=ob_imbalance,
             capital=capital,
             max_risk_pct=self.config.risk.max_risk_per_trade_pct,
+            kelly_sizer=self.kelly_sizer,
+            quantum_conviction=float(quantum_state.conviction_float) if quantum_state else 0.625,
         )
 
         if signal is None:
@@ -128,15 +149,23 @@ class ScalpingStrategy:
 
         self.signals_generated += 1
 
-        # AI signal scoring
+        # AI signal scoring (neural brain or XGBoost fallback)
         vol_state = self.volume_analyzer.analyze(processed_tf["5m"], ob_imbalance)
         features = self.feature_eng.extract_features(
             df_5m=processed_tf["5m"],
             conviction=conviction,
             volume_state=vol_state,
             order_book_imbalance=ob_imbalance,
+            quantum_state=quantum_state,
         )
-        ai_score = self.ai_filter.score_signal(features)
+        if self.neural_brain is not None:
+            ai_score = self.neural_brain.score_signal_with_sequence(
+                features=features,
+                df_5m=processed_tf["5m"],
+                quantum_state=quantum_state,
+            )
+        else:
+            ai_score = self.ai_filter.score_signal(features)
         signal.ai_score = ai_score
 
         if ai_score < self.config.trading.ai_confidence_threshold:
@@ -189,6 +218,11 @@ class ScalpingStrategy:
         """Run one full scan cycle across all configured symbols."""
         self.cycles_run += 1
         results = {"scanned": 0, "signals": 0, "trades": 0, "skipped": 0}
+
+        # Adaptive aggression adjustment (requires quantum state from last cycle)
+        if self.aggression_ctrl is not None and self.risk is not None:
+            # Use a neutral state on first cycle; real state comes from symbol evaluation
+            self.aggression_ctrl.apply(None, self, self.risk)
 
         symbols = self.config.trading.symbols
         for symbol in symbols:
@@ -261,22 +295,34 @@ class ScalpingStrategy:
         """Reset consecutive loss counter on a win."""
         self._consecutive_losses[symbol] = 0
 
-    def record_trade_outcome(self, features: Dict, outcome: int):
+    def record_trade_outcome(self, features: Dict, outcome: int,
+                              sequence=None):
         """Feed trade result back to AI model for learning."""
-        self.ai_filter.record_trade_outcome(features, outcome)
+        if self.neural_brain is not None:
+            self.neural_brain.record_trade_outcome(features, outcome, sequence)
+        else:
+            self.ai_filter.record_trade_outcome(features, outcome)
 
     def try_retrain_model(self) -> bool:
-        """Attempt AI model retraining. Called daily."""
+        """Attempt AI model retraining."""
+        if self.neural_brain is not None:
+            return self.neural_brain.retrain_if_due()
         return self.ai_filter.retrain_if_due()
 
     def get_stats(self) -> Dict:
+        ai_trained = (self.neural_brain.is_trained if self.neural_brain
+                      else self.ai_filter.is_trained)
+        ai_samples = (self.neural_brain.training_samples if self.neural_brain
+                      else self.ai_filter.training_samples)
         return {
             "cycles_run": self.cycles_run,
             "signals_generated": self.signals_generated,
             "signals_filtered_ai": self.signals_filtered_ai,
             "signals_traded": self.signals_traded,
-            "ai_trained": self.ai_filter.is_trained,
-            "ai_samples": self.ai_filter.training_samples,
+            "ai_trained": ai_trained,
+            "ai_samples": ai_samples,
+            "quantum_enabled": self.quantum_scorer is not None,
+            "kelly_enabled": self.kelly_sizer is not None,
             "filter_rate": round(
                 self.signals_filtered_ai / max(self.signals_generated, 1) * 100, 1
             ),

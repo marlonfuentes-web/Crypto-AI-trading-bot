@@ -93,6 +93,63 @@ class TradingBot:
             bot_logger=self.bot_logger,
         )
 
+        # Quantum components (activated only when QUANTUM_ENABLED=true)
+        if config.quantum is not None and config.quantum.enabled:
+            self._init_quantum_components()
+
+    def _init_quantum_components(self):
+        """Wire quantum scorer, neural brain, Kelly sizer, and adaptive aggression."""
+        from strategy.quantum_scorer import QuantumConvictionScorer
+        from ai.lstm_model import LSTMSignalModel
+        from ai.neural_brain import QuantumNeuralBrain
+        from risk.kelly_sizer import KellyPositionSizer
+        from strategy.adaptive_aggression import AdaptiveAggressionController
+
+        cfg = self.config.quantum
+        logger.info("Quantum mode ENABLED — initialising quantum components")
+
+        # 1. Quantum conviction scorer
+        quantum_scorer = QuantumConvictionScorer()
+        self.strategy.quantum_scorer = quantum_scorer
+        # Also wire into mtf_analyzer for inline scoring
+        self.strategy.mtf_analyzer.quantum_scorer = quantum_scorer
+
+        # 2. Neural brain (LSTM + XGBoost + MLP ensemble)
+        lstm_model = LSTMSignalModel(
+            model_path=cfg.lstm_model_path,
+            mlp_path=cfg.mlp_model_path,
+        )
+        neural_brain = QuantumNeuralBrain(
+            xgb_filter=self.ai_filter,
+            lstm_model=lstm_model,
+            retrain_interval_hours=cfg.retrain_interval_hours,
+            min_training_samples=cfg.min_training_samples,
+        )
+        self.strategy.neural_brain = neural_brain
+
+        # 3. Kelly position sizer
+        if cfg.use_kelly:
+            kelly = KellyPositionSizer(
+                min_risk_pct=cfg.kelly_min_risk_pct,
+                max_risk_pct=cfg.kelly_max_risk_pct,
+                fallback_risk_pct=cfg.kelly_fallback_risk_pct,
+            )
+            self.strategy.kelly_sizer = kelly
+
+        # 4. Adaptive aggression controller
+        if cfg.adaptive_aggression:
+            ctrl = AdaptiveAggressionController(
+                high_clarity_threshold=cfg.high_clarity_threshold,
+                mid_clarity_threshold=cfg.mid_clarity_threshold,
+            )
+            self.strategy.aggression_ctrl = ctrl
+
+        logger.info(
+            f"Quantum components ready: scorer=OK neural_brain=OK "
+            f"kelly={'OK' if cfg.use_kelly else 'disabled'} "
+            f"aggression={'OK' if cfg.adaptive_aggression else 'disabled'}"
+        )
+
     async def initialize(self):
         self.bot_logger.info("=" * 60)
         self.bot_logger.info("MEXC Crypto AI Scalping Bot Starting")
@@ -103,6 +160,8 @@ class TradingBot:
         self.bot_logger.info(f"Max risk/trade: {self.config.risk.max_risk_per_trade_pct}%")
         self.bot_logger.info(f"Daily loss limit: {self.config.risk.max_daily_loss_pct}%")
         self.bot_logger.info(f"AI threshold: {self.config.trading.ai_confidence_threshold}")
+        if self.config.quantum and self.config.quantum.enabled:
+            self.bot_logger.info("Quantum mode: ENABLED (scorer + neural brain + Kelly + aggression)")
         self.bot_logger.info("=" * 60)
 
         # Connect to exchange

@@ -52,7 +52,8 @@ class RiskManager:
     def __init__(self, capital: float, max_risk_pct: float = 5.0,
                  max_daily_loss_pct: float = 10.0, max_drawdown_pct: float = 20.0,
                  max_concurrent: int = 3, min_rr: float = 2.0,
-                 sl_atr_multiplier: float = 1.5):
+                 sl_atr_multiplier: float = 1.5,
+                 daily_trade_cap: int = 30):
         self.capital = capital
         self.max_risk_pct = max_risk_pct
         self.max_daily_loss_pct = max_daily_loss_pct
@@ -60,6 +61,7 @@ class RiskManager:
         self.max_concurrent = max_concurrent
         self.min_rr = min_rr
         self.sl_atr_multiplier = sl_atr_multiplier
+        self.daily_trade_cap = daily_trade_cap
 
         self.daily_stats = self._load_or_create_daily_stats()
         self._open_positions: Dict[str, Dict] = {}
@@ -131,8 +133,8 @@ class RiskManager:
         if self.daily_stats.is_trading_halted:
             return False, f"Trading halted: {self.daily_stats.halt_reason}"
 
-        if self.daily_stats.trades_taken >= 30:
-            return False, "Daily trade limit (30) reached"
+        if self.daily_stats.trades_taken >= self.daily_trade_cap:
+            return False, f"Daily trade limit ({self.daily_trade_cap}) reached"
 
         if len(self._open_positions) >= self.max_concurrent:
             return False, f"Max concurrent trades ({self.max_concurrent}) reached"

@@ -265,7 +265,33 @@ class TradeManager:
             if trade.is_tp1_hit(current_price) and not trade.partial_closed:
                 await self._handle_partial_close(trade, current_price)
 
-            # Activate trailing stop when profit >= 1.5x ATR
+            # ── Breakeven stop: activate at 1:1 R:R (entry ± 1×SL_dist) ──────
+            # Uses trailing_activation_price stored from the signal; falls back to ATR
+            if not trade.breakeven_set:
+                sl_dist = abs(trade.entry_price - trade.stop_loss)
+                if trade.side == "LONG":
+                    activation_price = trade.entry_price + sl_dist
+                    be_triggered = current_price >= activation_price
+                else:
+                    activation_price = trade.entry_price - sl_dist
+                    be_triggered = current_price <= activation_price
+
+                if be_triggered:
+                    # Move SL to entry (breakeven)
+                    trade.stop_loss = trade.entry_price
+                    trade.breakeven_set = True
+                    logger.info(f"{trade.symbol}: Breakeven stop activated at 1:1 R:R")
+                    if self.mode == "live" and trade.sl_order_id:
+                        try:
+                            new_sl = await self.client.modify_sl_order(
+                                trade.symbol, trade.sl_order_id,
+                                trade.remaining_size, trade.entry_price, trade.side,
+                            )
+                            trade.sl_order_id = new_sl.get("id", trade.sl_order_id)
+                        except Exception as e:
+                            logger.warning(f"Could not set BE stop for {trade.trade_id}: {e}")
+
+            # Activate ATR trailing stop when profit >= 1.5x ATR (additional protection)
             if profit_atr >= 1.5 and not trade.trailing_stop_active:
                 await self._activate_trailing_stop(trade, current_price)
 

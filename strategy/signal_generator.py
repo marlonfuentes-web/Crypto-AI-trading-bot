@@ -33,6 +33,7 @@ class TradingSignal:
     entry_reason: List[str]
     timestamp: int = field(default_factory=lambda: int(time.time() * 1000))
     timeframe: str = "5m"
+    trailing_activation_price: float = 0.0  # price that triggers breakeven stop (entry ± 1×SL_dist)
 
 
 class SignalGenerator:
@@ -246,6 +247,9 @@ class SignalGenerator:
             rr_ratio=round(rr, 2),
             checklist=checklist,
             entry_reason=reasons,
+            trailing_activation_price=round(
+                entry + sl_distance if direction == "BULLISH" else entry - sl_distance, 8
+            ),
         )
 
     def _check_entry_candle(self, df: pd.DataFrame, direction: TrendDirection) -> bool:

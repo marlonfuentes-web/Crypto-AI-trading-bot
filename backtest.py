@@ -73,8 +73,13 @@ class Trade:
     exit_price:      float = 0.0
     exit_time:       object = None
     pnl_usdt:        float = 0.0
-    outcome:         str   = "open"   # win | loss | timeout
+    outcome:         str   = "open"   # win | loss | timeout | breakeven
     bars_held:       int   = 0
+    # Trailing stop tracking
+    initial_stop_loss:      float = 0.0   # original SL (constant reference)
+    high_water_mark:        float = 0.0   # best price reached in trade direction
+    breakeven_activated:    bool  = False  # True once SL moved to entry
+    lock_profit_activated:  bool  = False  # True once SL moved to +0.5R
 
 
 @dataclass
@@ -224,7 +229,8 @@ class BacktestEngine:
                  min_adx: float = 30.0, min_conviction: int = 6,
                  volume_multiplier: float = 2.0, htf_confidence: float = 0.50,
                  min_confluences: int = 3, rsi_lo_long: float = 38,
-                 rsi_hi_long: float = 65, label: str = "STRICT"):
+                 rsi_hi_long: float = 65, label: str = "STRICT",
+                 trailing_stop_r: float = 1.0, lock_profit_r: float = 1.5):
         self.capital  = capital
         self.risk_pct = risk_pct
         self.label    = label
@@ -242,6 +248,8 @@ class BacktestEngine:
         )
         self.mtf = mtf
         self.min_conviction = min_conviction
+        self.trailing_stop_r = trailing_stop_r    # activate BE at N×SL_dist (1.0 = 1:1 R:R)
+        self.lock_profit_r   = lock_profit_r      # lock +0.5R at N×SL_dist (1.5 = 1.5:1)
 
     # ── per-symbol walk-forward ───────────────────────────────────────────────
 
@@ -296,12 +304,14 @@ class BacktestEngine:
                     peak_eq  = max(peak_eq, equity)
                     dd = (peak_eq - equity) / peak_eq * 100 if peak_eq > 0 else 0
                     res.max_drawdown_pct = max(res.max_drawdown_pct, dd)
-                    if tr.pnl_usdt > 0:
+                    if tr.outcome == "win":
                         res.wins += 1
+                    elif tr.outcome == "timeout":
+                        res.timeouts += 1
+                        if tr.pnl_usdt <= 0:
+                            res.losses += 1
                     else:
                         res.losses += 1
-                    if tr.outcome == "timeout":
-                        res.timeouts += 1
                     res.trades.append(tr)
                     res.total_trades += 1
                     res.total_pnl += tr.pnl_usdt
@@ -355,6 +365,8 @@ class BacktestEngine:
                     notional=sig.notional_usdt, risk_usdt=sig.risk_usdt,
                     atr=sig.atr, entry_time=t,
                     conviction=sig.conviction_score, rr_ratio=sig.rr_ratio,
+                    initial_stop_loss=sig.stop_loss,
+                    high_water_mark=sig.entry_price,
                 )
                 open_trades.append(tr)
                 day_opens += 1
@@ -368,19 +380,22 @@ class BacktestEngine:
         for tr in open_trades:
             tr.exit_price = last_close
             tr.exit_time  = last_time
-            tr.outcome    = "timeout"
             mult = 1 if tr.direction == "LONG" else -1
             tr.pnl_usdt   = (last_close - tr.entry_price) * mult * tr.position_size
             fee = tr.notional * TAKER_FEE * 2
             tr.pnl_usdt  -= fee
+            # Apply same BE rule: if BE activated and pnl≥0 → win
+            if tr.breakeven_activated and tr.pnl_usdt >= 0:
+                tr.outcome = "win"
+                res.wins += 1
+            else:
+                tr.outcome = "timeout"
+                res.timeouts += 1
+                if tr.pnl_usdt <= 0:
+                    res.losses += 1
             res.trades.append(tr)
             res.total_trades += 1
             res.total_pnl    += tr.pnl_usdt
-            if tr.pnl_usdt > 0:
-                res.wins += 1
-            else:
-                res.losses += 1
-            res.timeouts += 1
 
         # summary
         if res.total_trades > 0:
@@ -414,45 +429,82 @@ class BacktestEngine:
 
 
     def _check_exit(self, tr: Trade, bar: pd.Series, t: pd.Timestamp) -> bool:
-        """Return True and fill exit fields if SL, TP1, or timeout reached."""
+        """Return True and fill exit fields if SL, TP1, or timeout reached.
+
+        Trailing stop logic:
+          - At 1:1 R:R (trailing_stop_r × SL_dist in our favor): move SL to entry (breakeven)
+          - At 1.5:1 R:R (lock_profit_r × SL_dist): move SL to entry + 0.5×SL_dist (lock +0.5R)
+          - Any exit after BE activated counts as "win" if pnl ≥ 0
+        """
         tr.bars_held += 1
         high  = float(bar["high"])
         low   = float(bar["low"])
         close = float(bar["close"])
 
+        # Original SL distance (constant reference — never modified)
+        sl_dist = abs(tr.entry_price - tr.initial_stop_loss) if tr.initial_stop_loss else abs(tr.entry_price - tr.stop_loss)
+
+        # ── Trailing stop update (before exit checks) ──────────────────────────
+        if tr.direction == "LONG":
+            tr.high_water_mark = max(tr.high_water_mark, high)
+            move = tr.high_water_mark - tr.entry_price
+        else:
+            tr.high_water_mark = min(tr.high_water_mark, low)
+            move = tr.entry_price - tr.high_water_mark
+
+        if sl_dist > 0:
+            # Stage 1: activate breakeven stop at trailing_stop_r × SL_dist (default 1:1)
+            if not tr.breakeven_activated and move >= sl_dist * self.trailing_stop_r:
+                tr.stop_loss = tr.entry_price
+                tr.breakeven_activated = True
+
+            # Stage 2: lock in +0.5R at lock_profit_r × SL_dist (default 1.5:1)
+            if tr.breakeven_activated and not tr.lock_profit_activated and move >= sl_dist * self.lock_profit_r:
+                lock_price = (tr.entry_price + sl_dist * 0.5 if tr.direction == "LONG"
+                              else tr.entry_price - sl_dist * 0.5)
+                tr.stop_loss = lock_price
+                tr.lock_profit_activated = True
+
+        # ── Timeout ────────────────────────────────────────────────────────────
         if tr.bars_held >= MAX_BARS_HELD:
             tr.exit_price = close
             tr.exit_time  = t
-            tr.outcome    = "timeout"
             mult = 1 if tr.direction == "LONG" else -1
-            tr.pnl_usdt   = (close - tr.entry_price) * mult * tr.position_size
+            tr.pnl_usdt = (close - tr.entry_price) * mult * tr.position_size
+            # Breakeven was activated → any non-negative exit = win
+            if tr.breakeven_activated and tr.pnl_usdt >= 0:
+                tr.outcome = "win"
+            else:
+                tr.outcome = "timeout"
             return True
 
+        # ── SL / TP checks ─────────────────────────────────────────────────────
         if tr.direction == "LONG":
             if low <= tr.stop_loss:
                 tr.exit_price = tr.stop_loss
                 tr.exit_time  = t
-                tr.outcome    = "loss"
-                tr.pnl_usdt   = (tr.stop_loss - tr.entry_price) * tr.position_size
+                tr.pnl_usdt = (tr.stop_loss - tr.entry_price) * tr.position_size
+                # If BE activated: exit at entry (or above) = win; below = very rare negative slip
+                tr.outcome = "win" if (tr.breakeven_activated and tr.pnl_usdt >= 0) else "loss"
                 return True
             if high >= tr.take_profit_1:
                 tr.exit_price = tr.take_profit_1
                 tr.exit_time  = t
-                tr.outcome    = "win"
-                tr.pnl_usdt   = (tr.take_profit_1 - tr.entry_price) * tr.position_size
+                tr.pnl_usdt = (tr.take_profit_1 - tr.entry_price) * tr.position_size
+                tr.outcome = "win"
                 return True
         else:
             if high >= tr.stop_loss:
                 tr.exit_price = tr.stop_loss
                 tr.exit_time  = t
-                tr.outcome    = "loss"
-                tr.pnl_usdt   = (tr.entry_price - tr.stop_loss) * tr.position_size
+                tr.pnl_usdt = (tr.entry_price - tr.stop_loss) * tr.position_size
+                tr.outcome = "win" if (tr.breakeven_activated and tr.pnl_usdt >= 0) else "loss"
                 return True
             if low <= tr.take_profit_1:
                 tr.exit_price = tr.take_profit_1
                 tr.exit_time  = t
-                tr.outcome    = "win"
-                tr.pnl_usdt   = (tr.entry_price - tr.take_profit_1) * tr.position_size
+                tr.pnl_usdt = (tr.entry_price - tr.take_profit_1) * tr.position_size
+                tr.outcome = "win"
                 return True
         return False
 
@@ -603,11 +655,13 @@ def save_csv(results: List[SymbolResult], path: str = "logs/backtest_trades.csv"
                 "notional_usdt": round(t.notional, 2),
                 "risk_usdt":     round(t.risk_usdt, 2),
                 "pnl_usdt":      round(t.pnl_usdt, 4),
-                "outcome":       t.outcome,
-                "bars_held":     t.bars_held,
-                "conviction":    t.conviction,
-                "rr_ratio":      round(t.rr_ratio, 2),
-                "atr":           round(t.atr, 8),
+                "outcome":              t.outcome,
+                "bars_held":            t.bars_held,
+                "conviction":           t.conviction,
+                "rr_ratio":             round(t.rr_ratio, 2),
+                "atr":                  round(t.atr, 8),
+                "breakeven_activated":  t.breakeven_activated,
+                "lock_profit_activated": t.lock_profit_activated,
             })
     if rows:
         pd.DataFrame(rows).to_csv(path, index=False)
@@ -681,11 +735,16 @@ def main():
         print(f"  Generating {args.days}-day synthetic OHLCV data...\n")
         data = generate_all_symbols(syms, days=args.days, warmup_days=25)
 
+    # Trailing stop parameters (env-overridable)
+    trailing_r  = float(os.getenv("TRAILING_STOP_R", "1.0"))   # BE at 1:1 R:R
+    lock_r      = float(os.getenv("LOCK_PROFIT_R",   "1.5"))   # lock +0.5R at 1.5:1
+
     # ── Mode A: STRICT (production settings) ─────────────────────────────────
     strict_engine = BacktestEngine(
         capital=args.capital, risk_pct=RISK_PCT, label="STRICT",
         min_adx=30.0, min_conviction=6, volume_multiplier=2.0,
         htf_confidence=0.50, min_confluences=3,
+        trailing_stop_r=trailing_r, lock_profit_r=lock_r,
     )
     strict_results = _run_mode(strict_engine, data, "STRICT — production settings")
 
@@ -695,6 +754,7 @@ def main():
         min_adx=20.0, min_conviction=4, volume_multiplier=1.3,
         htf_confidence=0.30, min_confluences=2,
         rsi_lo_long=30.0, rsi_hi_long=72.0,
+        trailing_stop_r=trailing_r, lock_profit_r=lock_r,
     )
     diag_results = _run_mode(diag_engine, data, "DIAGNOSTIC — relaxed thresholds")
 

@@ -43,6 +43,8 @@ class RiskConfig:
     trailing_stop_activation_atr: float = 1.5
     max_sl_atr_multiplier: float = 1.5
     min_sl_atr_multiplier: float = 0.8
+    trailing_stop_r: float = 1.0    # activate breakeven stop at N×SL_dist (1.0 = 1:1 R:R)
+    lock_profit_r: float = 1.5      # lock +0.5R at N×SL_dist (1.5 = 1.5:1 R:R)
 
 
 @dataclass
@@ -128,6 +130,8 @@ def load_config() -> AppConfig:
         max_risk_per_trade_pct=float(os.getenv("MAX_RISK_PER_TRADE_PCT", "5.0")),
         max_daily_loss_pct=float(os.getenv("MAX_DAILY_LOSS_PCT", "10.0")),
         min_rr_ratio=float(os.getenv("MIN_RR_RATIO", "2.0")),
+        trailing_stop_r=float(os.getenv("TRAILING_STOP_R", "1.0")),
+        lock_profit_r=float(os.getenv("LOCK_PROFIT_R", "1.5")),
     )
 
     ai_cfg = AIConfig()

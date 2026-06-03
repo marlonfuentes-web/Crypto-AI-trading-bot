@@ -31,6 +31,8 @@ class TradingConfig:
     ai_confidence_threshold: float = 0.65
     min_rr_ratio: float = 2.0
     scan_interval_seconds: int = 60
+    pullback_tolerance_pct: float = 0.008
+    min_body_ratio: float = 0.35
 
 
 @dataclass
@@ -123,6 +125,8 @@ def load_config() -> AppConfig:
         max_concurrent_trades=int(os.getenv("MAX_CONCURRENT_TRADES", "3")),
         ai_confidence_threshold=float(os.getenv("AI_CONFIDENCE_THRESHOLD", "0.65")),
         min_rr_ratio=float(os.getenv("MIN_RR_RATIO", "2.0")),
+        pullback_tolerance_pct=float(os.getenv("PULLBACK_TOLERANCE_PCT", "0.008")),
+        min_body_ratio=float(os.getenv("MIN_BODY_RATIO", "0.35")),
     )
 
     risk_cfg = RiskConfig(

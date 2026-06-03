@@ -57,7 +57,9 @@ class SignalGenerator:
                  htf_confidence: float = 0.50,
                  min_confluences: int = 3,
                  rsi_lo_long: float = 38.0,
-                 rsi_hi_long: float = 65.0):
+                 rsi_hi_long: float = 65.0,
+                 pullback_tolerance_pct: float = 0.008,
+                 min_body_ratio: float = 0.35):
         self.trend = trend_detector or TrendDetector()
         self.volume = volume_analyzer or VolumeAnalyzer()
         self.mtf = mtf_analyzer or MultiTimeframeAnalyzer()
@@ -69,6 +71,8 @@ class SignalGenerator:
         self.min_confluences = min_confluences
         self.rsi_lo_long = rsi_lo_long
         self.rsi_hi_long = rsi_hi_long
+        self.pullback_tolerance_pct = pullback_tolerance_pct
+        self.min_body_ratio = min_body_ratio
 
     def generate_signal(self, symbol: str, tf_data: Dict[str, pd.DataFrame],
                         conviction: ConvictionScore,
@@ -285,12 +289,12 @@ class SignalGenerator:
         if direction == "BULLISH":
             is_bullish_candle = close > open_
             close_in_upper_half = close_position >= 0.50
-            strong_body = body_ratio >= 0.35
+            strong_body = body_ratio >= self.min_body_ratio
             return (is_bullish_candle and close_in_upper_half) and (strong_body or absorption)
         else:
             is_bearish_candle = close < open_
             close_in_lower_half = close_position <= 0.50
-            strong_body = body_ratio >= 0.35
+            strong_body = body_ratio >= self.min_body_ratio
             return (is_bearish_candle and close_in_lower_half) and (strong_body or absorption)
 
     def _check_pullback_quality(self, df: pd.DataFrame, direction: TrendDirection) -> bool:
@@ -322,7 +326,7 @@ class SignalGenerator:
 
         for level in levels_to_check:
             dist_pct = abs(close - level) / close
-            if dist_pct <= 0.008:  # within 0.8% of a key moving average
+            if dist_pct <= self.pullback_tolerance_pct:
                 return True
 
         return False

@@ -230,10 +230,14 @@ class BacktestEngine:
                  volume_multiplier: float = 2.0, htf_confidence: float = 0.50,
                  min_confluences: int = 3, rsi_lo_long: float = 38,
                  rsi_hi_long: float = 65, label: str = "STRICT",
-                 trailing_stop_r: float = 1.0, lock_profit_r: float = 1.5):
+                 trailing_stop_r: float = 1.0, lock_profit_r: float = 1.5,
+                 pullback_tolerance_pct: float = 0.008, min_body_ratio: float = 0.35,
+                 max_concurrent: int = MAX_CONCURRENT, daily_trade_cap: int = DAILY_TRADE_CAP):
         self.capital  = capital
         self.risk_pct = risk_pct
         self.label    = label
+        self.max_concurrent  = max_concurrent
+        self.daily_trade_cap = daily_trade_cap
 
         td = TrendDetector()
         va = VolumeAnalyzer(surge_multiplier=volume_multiplier)
@@ -245,6 +249,8 @@ class BacktestEngine:
             min_adx=min_adx, volume_multiplier=volume_multiplier,
             htf_confidence=htf_confidence, min_confluences=min_confluences,
             rsi_lo_long=rsi_lo_long, rsi_hi_long=rsi_hi_long,
+            pullback_tolerance_pct=pullback_tolerance_pct,
+            min_body_ratio=min_body_ratio,
         )
         self.mtf = mtf
         self.min_conviction = min_conviction
@@ -320,9 +326,9 @@ class BacktestEngine:
             open_trades = still_open
 
             # ── pre-entry guards ──────────────────────────────────────────────
-            if len(open_trades) >= MAX_CONCURRENT:
+            if len(open_trades) >= self.max_concurrent:
                 continue
-            if day_opens >= DAILY_TRADE_CAP:
+            if day_opens >= self.daily_trade_cap:
                 continue
             if day_pnl <= -equity * 0.10:     # daily loss limit
                 continue
@@ -758,6 +764,21 @@ def main():
     )
     diag_results = _run_mode(diag_engine, data, "DIAGNOSTIC — relaxed thresholds")
 
+    # ── Mode C: HYPER (ultra-relaxed — target 400 trades/month) ──────────────
+    hyper_engine = BacktestEngine(
+        capital=args.capital, risk_pct=RISK_PCT, label="HYPER",
+        min_adx=12.0, min_conviction=3, volume_multiplier=1.0,
+        htf_confidence=0.15, min_confluences=1,
+        rsi_lo_long=20.0, rsi_hi_long=82.0,
+        pullback_tolerance_pct=0.02,   # 2% — much wider zone
+        min_body_ratio=0.15,           # 15% body — accepts doji-style candles
+        trailing_stop_r=0.75,          # BE activates earlier (0.75:1 R:R)
+        lock_profit_r=1.25,
+        max_concurrent=5,
+        daily_trade_cap=60,
+    )
+    hyper_results = _run_mode(hyper_engine, data, "HYPER — 400 trades/month target")
+
     # ── Reports ───────────────────────────────────────────────────────────────
     print("\n" + "=" * 68)
     print("  STRICT MODE  (production thresholds: ADX≥30, conviction≥6, vol≥2x)")
@@ -782,6 +803,18 @@ def main():
         save_csv(diag_results, "logs/backtest_diagnostic.csv")
     else:
         print("\n  Result: Still 0 trades — synthetic data lacks realistic trend structure.")
+
+    print("\n" + "=" * 68)
+    print("  HYPER MODE  (target: 400 trades/month, ~13/day)")
+    print("  Ultra-relaxed entry — trailing BE stop at 0.75:1 R:R protects capital")
+    print("  ADX≥12  conviction≥3  vol≥1.0x  pullback 2%  body 15%  cap 60/day")
+    print_symbol_table(hyper_results)
+    hyper_total = sum(r.total_trades for r in hyper_results)
+    if hyper_total > 0:
+        print_portfolio_summary(hyper_results, args.days, args.capital)
+        save_csv(hyper_results, "logs/backtest_hyper.csv")
+    else:
+        print("\n  Result: 0 trades — synthetic data still too restrictive for HYPER.")
 
     print("\n" + "=" * 68)
     print(f"  Data source:  {data_source}")
